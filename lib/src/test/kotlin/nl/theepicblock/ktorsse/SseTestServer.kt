@@ -1,19 +1,17 @@
 package nl.theepicblock.ktorsse
 
 import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpHandler
 import com.sun.net.httpserver.HttpServer
 import java.io.BufferedWriter
 import java.net.Inet6Address
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.ThreadLocalRandom
 
 /**
  * A simple server, to facilitate testing of the client
  * @see <a href="https://medium.com/@cse.saiful2119/server-sent-event-sse-in-a-nutshell-how-to-implement-sse-using-a-java-client-and-a-simple-http-7ed4eff580c8">How to Implement SSE Using a Java Client and a Simple HTTP Server</a>
  */
-class SseTestServer : AutoCloseable {
+class SseTestServer(port: Int = 0) : AutoCloseable {
     private val server: HttpServer
     val port get() = server.address.port
     val url get() = "http://${server.address.asUri()}:$port/sse/"
@@ -22,7 +20,7 @@ class SseTestServer : AutoCloseable {
     val listenerCount get() = listeners.size
 
     init {
-        server = HttpServer.create(InetSocketAddress(0), 0)
+        server = HttpServer.create(InetSocketAddress(port), 0)
         server.createContext("/sse/") { exchange ->
             exchange.responseHeaders.add("Content-Type", "text/event-stream")
             exchange.responseHeaders.add("charset", "utf-8")
