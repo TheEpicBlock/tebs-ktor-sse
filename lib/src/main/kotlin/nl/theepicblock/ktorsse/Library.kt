@@ -2,6 +2,7 @@ package nl.theepicblock.ktorsse
 
 import io.ktor.client.*
 import io.ktor.client.request.*
+import io.ktor.http.*
 import io.ktor.sse.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.Job
@@ -18,7 +19,12 @@ fun HttpClient.launchSseListener(urlString: String? = null, builder: SseListener
 suspend fun HttpClient.createSseListener(urlString: String? = null, builder: SseListenerBuilder.() -> Unit) {
     val builderData = SseListenerBuilder()
     builder(builderData)
+
+    // Delay corresponds to https://www.w3.org/TR/2012/WD-eventsource-20120426/#concept-event-stream-reconnection-time
     var delay = builderData.defaultReconnectionTime?.toMillis()
+    // lastEventId corresponds to https://www.w3.org/TR/2012/WD-eventsource-20120426/#concept-event-stream-last-event-id
+    var lastEventId: String? = null // last event ID
+    // Amount of concurrent retries to connect
     var retryCount = 0
 
     val statement = prepareRequest {
@@ -28,37 +34,42 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
         builderData.requestBuilder?.let { it(this) }
     }
     while (isActive) {
+        statement.also {
+            headers {
+                if (lastEventId == null) {
+                    remove("Last-Event-ID")
+                } else {
+                    set("Last-Event-ID", lastEventId!!)
+                }
+            }
+        }
         statement.body<ByteReadChannel, Unit> { channel ->
             builderData.onConnected()
             retryCount = 0
             // SSE parsing.
             // See: https://www.w3.org/TR/2012/WD-eventsource-20120426/#parsing-an-event-stream
-            val data = StringBuilder()
-            val comment = StringBuilder()
+            var data: StringBuilder? = null
+            var comment: StringBuilder? = null
             var event: String? = null
-            var id: String? = null // last event ID
             var retry: Long? = null
 
             while (isActive) {
-                var line = channel.readUTF8Line()
-                if (line == null) break
+                val line = channel.readUTF8Line() ?: break
 
                 if (line.isEmpty()) {
                     // Dispatch the event
-                    if (retry != null) {
-                        delay = retry
-                    }
+                    // Intentionally ignoring spec here by emitting events even if the data field is empty
                     builderData.listener(
                         ServerSentEvent(
-                            data = data.toString(),
+                            data = data?.toString(),
                             event = event,
-                            comments = comment.toString(),
+                            comments = comment?.toString(),
                             retry = retry,
-                            id = id,
+                            id = lastEventId,
                         )
                     )
-                    data.clear()
-                    comment.clear()
+                    data = null
+                    comment = null
                     event = null
                     retry = null
                 } else {
@@ -82,11 +93,22 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
                     // Process the field/value pair
                     when (field) {
                         "event" -> event = value
-                        "data" -> data.append(value)
-                        "id" -> id = value
-                        "retry" -> value.toLongOrNull()?.let { retry = it }
+                        "data" -> {
+                            if (data == null) data = StringBuilder()
+                            if (data.isNotEmpty()) data.append("\u000A")
+                            data.append(value)
+                        }
+                        "id" -> lastEventId = if (value == "" ) null else value
+                        "retry" -> value.toLongOrNull()?.let {
+                            retry = it
+                            delay = it // According to spec, we should set our reconnection time immediately upon reading this field
+                        }
                         // We'll also record comment fields, to match ktor's native sse handling
-                        "" -> comment.append(value)
+                        "" -> {
+                            if (comment == null) comment = StringBuilder()
+                            if (comment.isNotEmpty()) comment.append("\u000A")
+                            comment.append(value)
+                        }
                         // Ignore any other values
                     }
                 }

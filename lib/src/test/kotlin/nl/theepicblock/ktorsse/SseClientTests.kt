@@ -5,6 +5,7 @@ import io.ktor.sse.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
+import nl.theepicblock.ktorsse.SseClientTests.TestListener
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,7 +23,7 @@ class SseClientTests {
                     listener.awaitConnected()
                     assertEquals(1, server.listenerCount)
                     assertNoData(listener)
-                    server.send("FlorbleDorble")
+                    server.sendData("FlorbleDorble")
                     delay(200)
                     assertEquals("FlorbleDorble", listener.awaitNextEvent().data)
                     assertNoData(listener)
@@ -41,7 +42,7 @@ class SseClientTests {
                 val listener = testListener(client, server.url)
                 listener.awaitConnected()
                 assertEquals(1, server.listenerCount)
-                server.send("Test1")
+                server.sendData("Test1")
                 delay(200)
                 assertEquals("Test1", listener.awaitNextEvent().data)
                 assertNoData(listener)
@@ -53,7 +54,7 @@ class SseClientTests {
                 listener.awaitConnected()
                 assertNoData(listener)
                 assertEquals(1, server2.listenerCount)
-                server2.send("Test2")
+                server2.sendData("Test2")
                 assertEquals("Test2", listener.awaitNextEvent().data)
                 server2.close()
 
@@ -62,34 +63,13 @@ class SseClientTests {
         }
     }
 
-    fun testListener(client: HttpClient, url: String): TestListener {
-        val sseEvents = Channel<ServerSentEvent>()
-        val conEvents = Channel<Boolean>()
-        val job = client.launchSseListener(url) {
-            onConnected = {
-                println("Listener: connected")
-                conEvents.trySendBlocking(true)
-            }
-            onDisconnected = {
-                println("Listener: disconnected")
-                conEvents.trySendBlocking(false)
-            }
-            listener = {
-                println("Listener: received event")
-                sseEvents.trySendBlocking(it)
-            }
-            defaultReconnectionTime = Duration.ofMillis(200)
-        }
-        return TestListener(sseEvents, conEvents, job)
-    }
-
     fun assertNoData(listener: TestListener) {
         listener.assertNoData()
     }
 
     class TestListener(
-        private var sseEvents: Channel<ServerSentEvent>,
-        private val connectionEvents: Channel<Boolean>,
+        var sseEvents: Channel<ServerSentEvent>,
+        val connectionEvents: Channel<Boolean>,
         val job: Job
     ) {
         suspend fun awaitConnected() {
@@ -115,4 +95,26 @@ class SseClientTests {
             job.cancel()
         }
     }
+}
+
+fun testListener(client: HttpClient, url: String, configurer: SseListenerBuilder.() -> Unit = {}): TestListener {
+    val sseEvents = Channel<ServerSentEvent>()
+    val conEvents = Channel<Boolean>()
+    val job = client.launchSseListener(url) {
+        onConnected = {
+            println("Listener: connected")
+            conEvents.trySendBlocking(true)
+        }
+        onDisconnected = {
+            println("Listener: disconnected")
+            conEvents.trySendBlocking(false)
+        }
+        listener = {
+            println("Listener: received event")
+            sseEvents.trySendBlocking(it)
+        }
+        defaultReconnectionTime = Duration.ofMillis(200)
+        configurer()
+    }
+    return TestListener(sseEvents, conEvents, job)
 }

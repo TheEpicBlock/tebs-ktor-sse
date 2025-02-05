@@ -35,9 +35,16 @@ class SseTestServer(port: Int = 0) : AutoCloseable {
         server.start()
     }
 
-    fun send(data: String) {
+    /**
+     * Send a single event containing only a data field
+     */
+    fun sendData(data: String) {
+        sendRaw("data: $data\n\n")
+    }
+
+    fun sendRaw(data: String) {
         listeners.forEach {
-            it.second.write("data: $data\n\n")
+            it.second.write(data)
             it.second.flush()
         }
     }
