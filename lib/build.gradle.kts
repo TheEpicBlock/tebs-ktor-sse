@@ -40,7 +40,7 @@ tasks.named<Test>("test") {
 
 publishing {
     publications {
-        create<MavenPublication>(project.name) {
+        create<MavenPublication>(rootProject.name) {
             from(components["java"])
 
             pom {
