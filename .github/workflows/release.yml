@@ -1,0 +1,24 @@
+name: release
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          validate-wrappers: true
+
+      - name: Build library
+        run: ./gradlew build
+
+      - name: Upload to Maven
+        run: ./gradlew publish -PtebUsername=ktorsseci -PtebPassword=${{ secrets.MAVEN_TOKEN }}
