@@ -2,6 +2,7 @@ package nl.theepicblock.ktorsse
 
 import io.ktor.client.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.sse.*
 import io.ktor.utils.io.*
@@ -27,6 +28,7 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: 
     var lastEventId: String? = null // last event ID
     // Amount of concurrent retries to connect
     var retryCount = 0
+    var isFirstConnection = true
 
     val statement = prepareRequest {
         if (urlString != null) {
@@ -45,7 +47,17 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: 
             }
         }
         var didConnect = false
-        statement.body<ByteReadChannel, Unit> { channel ->
+        val error: SseConnectionError? = statement.execute { httpRequest ->
+            if (!(httpRequest.contentType()?.contentType == "text" &&
+                        httpRequest.contentType()?.contentSubtype == "event-stream")
+            ) {
+                return@execute SseInvalidContentType(httpRequest.contentType())
+            }
+            if (!httpRequest.status.isSuccess()) {
+                return@execute SseServerError(httpRequest.status)
+            }
+
+            val channel = httpRequest.bodyAsChannel()
             config.onConnected()
             didConnect = true
             retryCount = 0
@@ -57,7 +69,7 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: 
             var retry: Long? = null
 
             while (isActive) {
-                val line = channel.readUTF8Line() ?: break
+                val line = channel.readUTF8Line() ?: return@execute null
 
                 if (line.isEmpty()) {
                     // Dispatch the event
@@ -101,10 +113,12 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: 
                             if (data.isNotEmpty()) data.append("\u000A")
                             data.append(value)
                         }
-                        "id" -> lastEventId = if (value == "" ) null else value
+
+                        "id" -> lastEventId = if (value == "") null else value
                         "retry" -> value.toLongOrNull()?.let {
                             retry = it
-                            delay = it // According to spec, we should set our reconnection time immediately upon reading this field
+                            delay =
+                                it // According to spec, we should set our reconnection time immediately upon reading this field
                         }
                         // We'll also record comment fields, to match ktor's native sse handling
                         "" -> {
@@ -116,20 +130,26 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: 
                     }
                 }
             }
+            return@execute null
         }
         if (didConnect) {
             config.onDisconnected()
         }
-        val retryData = RetryHandler(delay, retryCount)
-        config.retryHandler(retryData)
-        retryCount++
-        if (!retryData.answered) {
-            throw IllegalStateException("Must call retry() or dontRetry()")
-        }
-        if (retryData.retryMillis == -1L) {
+        if (!isActive) {
             break
         } else {
-            delay(retryData.retryMillis)
+            val retryData = RetryHandler(delay, retryCount, (isFirstConnection && !didConnect), error)
+            config.retryHandler(retryData)
+            retryCount++
+            if (!retryData.answered) {
+                throw IllegalStateException("Must call retry() or dontRetry()")
+            }
+            if (retryData.retryMillis == -1L) {
+                break
+            } else {
+                delay(retryData.retryMillis)
+            }
+            isFirstConnection = false
         }
     }
 }
@@ -139,27 +159,39 @@ class SseListenerConfig {
     var listener: ((ServerSentEvent) -> Unit) = {}
     var onConnected: (() -> Unit) = {}
     var onDisconnected: (() -> Unit) = {}
-    var defaultReconnectionTime: java.time.Duration? = null
+    var defaultReconnectionTime: Duration? = null
+
     /**
      * Function which determines the retry delay, as well as if a retry should take place
      */
     var retryHandler: (RetryHandler.() -> Unit) = {
-        retry(retryDelay ?: 5_000)
+        if (firstConnectionFailed || didError) {
+            dontRetry()
+        } else {
+            retry(retryDelay ?: 5_000)
+        }
     }
 }
 
 class RetryHandler(
     /**
-     * The amount of time that the server has requested we delay the retry for
+     * The amount of time that the server has requested we delay the retry for.
      */
     val retryDelay: Long?,
     /**
-     * Incremented for each concurrent retry. Will be zero on the first retry
+     * Incremented for each concurrent retry. Will be zero on the first retry.
      */
-    val retryCount: Int
+    val retryCount: Int,
+    /**
+     * Will be true if this was the first connection, and it failed to establish. The
+     * server sent event specification says that no further attempts should be made if the first connection fails.
+     */
+    val firstConnectionFailed: Boolean,
+    val error: SseConnectionError?,
 ) {
     internal var answered: Boolean = false
     internal var retryMillis: Long = -1
+    val didError get() = error != null
 
     fun retry(milliseconds: Long) {
         answered = true
@@ -172,4 +204,25 @@ class RetryHandler(
         answered = true
         retryMillis = -1
     }
+}
+
+sealed class SseConnectionError : Exception()
+
+/**
+ * Used when the server doesn't respond with a sse content type.
+ * This indicates that the server may not be serving sse at this url, and should be taken into consideration when retrying.
+ */
+class SseInvalidContentType(val contentType: ContentType?) : SseConnectionError() {
+    override val message: String
+        get() = "Received content type of $contentType but expected 'text/event-stream'"
+}
+
+/**
+ * Used when the server returns a non 200 error code.
+ * This might indicate that server is not serving sse at this url. Or for 5xx status codes specifically,
+ * it might indicate server capacity problems. This should be taken into consideration when retrying.
+ */
+class SseServerError(val statusCode: HttpStatusCode) : SseConnectionError() {
+    override val message: String
+        get() = "Recieved non-ok http status $statusCode whilst attempting to connect to SSE stream"
 }
