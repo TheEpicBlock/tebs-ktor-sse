@@ -65,14 +65,30 @@ publishing {
                         url = "https://theepicblock.nl"
                     }
                 }
-            }
 
-            versionMapping {
-                usage("java-api") {
-                    fromResolutionOf("runtimeClasspath")
-                }
-                usage("java-runtime") {
-                    fromResolutionOf("runtimeClasspath")
+                suppressAllPomMetadataWarnings()
+                withXml {
+                    asElement().getElementsByTagName("dependency").forEach { dep ->
+                        var groupId: String? = null;
+                        var artifactId: String? = null;
+                        dep.childNodes.forEach {
+                            when (it.nodeName) {
+                                "groupId" -> groupId = it.textContent
+                                "artifactId" -> artifactId = it.textContent
+                            }
+                        }
+                        val v = configurations["runtimeClasspath"].resolvedConfiguration.resolvedArtifacts.find {
+                            val mvi = it.moduleVersion.id
+                            return@find mvi.group == groupId && mvi.name.contains(artifactId.toString())
+                        }
+                        if (v != null) {
+                            dep.childNodes.forEach {
+                                if (it.nodeName == "version") {
+                                    it.textContent = v.moduleVersion.id.version
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -84,5 +100,11 @@ publishing {
             credentials(PasswordCredentials::class)
             url = uri("https://maven.theepicblock.nl")
         }
+    }
+}
+
+inline fun org.w3c.dom.NodeList.forEach(consumer: (org.w3c.dom.Node) -> Unit) {
+    for (i in 0..this.length - 1) {
+        consumer(this.item(i))
     }
 }
