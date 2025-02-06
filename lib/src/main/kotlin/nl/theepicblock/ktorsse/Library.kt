@@ -9,19 +9,20 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Duration
 
-fun HttpClient.launchSseListener(urlString: String? = null, builder: SseListenerBuilder.() -> Unit): Job {
+fun HttpClient.launchSseListener(urlString: String? = null, configurer: SseListenerConfig.() -> Unit): Job {
     return launch {
-        createSseListener(urlString, builder)
+        createSseListener(urlString, configurer)
     }
 }
 
-suspend fun HttpClient.createSseListener(urlString: String? = null, builder: SseListenerBuilder.() -> Unit) {
-    val builderData = SseListenerBuilder()
-    builder(builderData)
+suspend fun HttpClient.createSseListener(urlString: String? = null, configurer: SseListenerConfig.() -> Unit) {
+    val config = SseListenerConfig()
+    configurer(config)
 
     // Delay corresponds to https://www.w3.org/TR/2012/WD-eventsource-20120426/#concept-event-stream-reconnection-time
-    var delay = builderData.defaultReconnectionTime?.toMillis()
+    var delay = config.defaultReconnectionTime?.toMillis()
     // lastEventId corresponds to https://www.w3.org/TR/2012/WD-eventsource-20120426/#concept-event-stream-last-event-id
     var lastEventId: String? = null // last event ID
     // Amount of concurrent retries to connect
@@ -31,7 +32,7 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
         if (urlString != null) {
             url(urlString)
         }
-        builderData.requestBuilder?.let { it(this) }
+        config.requestBuilder?.let { it(this) }
     }
     while (isActive) {
         statement.also {
@@ -43,8 +44,10 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
                 }
             }
         }
+        var didConnect = false
         statement.body<ByteReadChannel, Unit> { channel ->
-            builderData.onConnected()
+            config.onConnected()
+            didConnect = true
             retryCount = 0
             // SSE parsing.
             // See: https://www.w3.org/TR/2012/WD-eventsource-20120426/#parsing-an-event-stream
@@ -59,7 +62,7 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
                 if (line.isEmpty()) {
                     // Dispatch the event
                     // Intentionally ignoring spec here by emitting events even if the data field is empty
-                    builderData.listener(
+                    config.listener(
                         ServerSentEvent(
                             data = data?.toString(),
                             event = event,
@@ -114,9 +117,11 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
                 }
             }
         }
-        builderData.onDisconnected()
+        if (didConnect) {
+            config.onDisconnected()
+        }
         val retryData = RetryHandler(delay, retryCount)
-        builderData.retryHandler(retryData)
+        config.retryHandler(retryData)
         retryCount++
         if (!retryData.answered) {
             throw IllegalStateException("Must call retry() or dontRetry()")
@@ -129,12 +134,15 @@ suspend fun HttpClient.createSseListener(urlString: String? = null, builder: Sse
     }
 }
 
-class SseListenerBuilder {
+class SseListenerConfig {
     var requestBuilder: (HttpRequestBuilder.() -> Unit)? = null
     var listener: ((ServerSentEvent) -> Unit) = {}
     var onConnected: (() -> Unit) = {}
     var onDisconnected: (() -> Unit) = {}
     var defaultReconnectionTime: java.time.Duration? = null
+    /**
+     * Function which determines the retry delay, as well as if a retry should take place
+     */
     var retryHandler: (RetryHandler.() -> Unit) = {
         retry(retryDelay ?: 5_000)
     }
@@ -157,6 +165,8 @@ class RetryHandler(
         answered = true
         retryMillis = milliseconds
     }
+
+    fun retry(delay: Duration) = retry(delay.toMillis())
 
     fun dontRetry() {
         answered = true

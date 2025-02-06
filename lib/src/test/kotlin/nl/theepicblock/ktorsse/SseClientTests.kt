@@ -97,7 +97,7 @@ class SseClientTests {
     }
 }
 
-fun testListener(client: HttpClient, url: String, configurer: SseListenerBuilder.() -> Unit = {}): TestListener {
+fun testListener(client: HttpClient, url: String, configurer: SseListenerConfig.() -> Unit = {}): TestListener {
     val sseEvents = Channel<ServerSentEvent>()
     val conEvents = Channel<Boolean>()
     val job = client.launchSseListener(url) {
