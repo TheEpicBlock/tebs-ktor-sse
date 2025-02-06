@@ -66,6 +66,15 @@ publishing {
                     }
                 }
             }
+
+            versionMapping {
+                usage("java-api") {
+                    fromResolutionOf("runtimeClasspath")
+                }
+                usage("java-runtime") {
+                    fromResolutionOf("runtimeClasspath")
+                }
+            }
         }
     }
 
